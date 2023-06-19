@@ -12,8 +12,12 @@ struct data
 const char *ssid = "esp32_wifi";
 const char *password = "wifi1234";
 String serverip = "192.168.43.150:3000";
-RTC_DATA_ATTR data tab_temp[50];
+RTC_DATA_ATTR double tab_temp[50];
 RTC_DATA_ATTR unsigned int counter = 0;
+RTC_DATA_ATTR unsigned int tempFreq = 10;        // frequence lecture
+RTC_DATA_ATTR unsigned int connectionFreq = 30;  // frequence envoie
+RTC_DATA_ATTR unsigned int connectionConfig = 3; // frequence envoie
+
 void setup()
 {
   Serial.begin(115200);
@@ -62,27 +66,29 @@ void sendData()
 {
 
   HTTPClient http;
-  String url = "http://" + serverip + "/";
+  String url = "http://" + serverip + "/host/api/Esp32";
   http.begin(url.c_str());
   http.addHeader("Content-Type", "application/json");
-  String payload = "{\"data\":[";
+  String payload = "{\"config\":{\"tempFreq\":" + String(tempFreq) +",\"connectionString\":" + String(tempFreq) +",\"connectionFreq\":" + String(connectionFreq) + "},\"temperatures\":[";
   for (int i = 0; i < counter; i++)
   {
-    payload += "{\"temp\":"+String(tab_temp[i].temp)+",\"timestamp\":"+String(tab_temp[i].time)+"}";
-    if(i<counter-1) payload += ",";
+    // payload += "{\"temp\":"+String(tab_temp[i].temp)+",\"timestamp\":"+String(tab_temp[i].time)+"}";
+    payload += String(tab_temp[i]);
+    if (i < counter - 1)
+      payload += ",";
   }
   payload += "]}";
-  int res = http.POST(payload);
+  int res = http.PUT(payload);
   Serial.printf("HTTP POST result: %d\n", res);
 }
 
 void loop()
 {
   float temp2 = readTemp2(false);
-  unsigned long time = getTime();
+  // unsigned long time = getTime();
   Serial.printf("time : %u Temp2 : %f, Wifi status %s\n Compteur : %u\n", time, temp2, WiFi.status() == WL_CONNECTED ? "connected" : "disconnected", counter);
-  tab_temp[counter] = {.temp=temp2,.time=time};
-  
+  tab_temp[counter] = temp2;
+
   // start esp light sleep of 5s
   if (counter % 3 == 0)
   {
@@ -92,6 +98,6 @@ void loop()
   }
   Serial.flush();
   counter++;
-  esp_sleep_enable_timer_wakeup(5 * 1000000);
+  esp_sleep_enable_timer_wakeup(tempFreq * 1000000);
   esp_deep_sleep_start();
 }
