@@ -2,21 +2,16 @@
 #include "./internal_temp.h"
 #include <HTTPClient.h>
 #include <WiFi.h>
-
-struct data
-{
-  double temp;
-  unsigned long time;
-};
+#include <ArduinoJson.h>
 
 const char *ssid = "esp32_wifi";
 const char *password = "wifi1234";
 String serverip = "192.168.43.150:3000";
-RTC_DATA_ATTR double tab_temp[50];
-RTC_DATA_ATTR unsigned int counter = 0;
-RTC_DATA_ATTR unsigned int tempFreq = 10;        // frequence lecture
-RTC_DATA_ATTR unsigned int connectionFreq = 30;  // frequence envoie
-RTC_DATA_ATTR unsigned int connectionConfig = 3; // frequence envoie
+RTC_DATA_ATTR byte tab_temp[50];
+RTC_DATA_ATTR byte counter = 0;
+RTC_DATA_ATTR byte tempFreq = 10;        // frequence lecture
+RTC_DATA_ATTR byte connectionFreq = 30;  // frequence envoie
+RTC_DATA_ATTR byte connectionConfig = 3; // frequence envoie
 
 void setup()
 {
@@ -55,7 +50,6 @@ void initWifi()
     Serial.print(".");
     delay(100);
   }
-  Serial.println("\nConnected to the WiFi network");
   Serial.print("\nConnected to the WiFi network");
   Serial.println(WiFi.getAutoConnect());
   Serial.print("Local ESP32 IP: ");
@@ -66,10 +60,10 @@ void sendData()
 {
 
   HTTPClient http;
-  String url = "http://" + serverip + "/host/api/Esp32";
+  String url = "http://" + serverip + "/host/api/Esp32/oui";
   http.begin(url.c_str());
   http.addHeader("Content-Type", "application/json");
-  String payload = "{\"config\":{\"tempFreq\":" + String(tempFreq) +",\"connectionString\":" + String(tempFreq) +",\"connectionFreq\":" + String(connectionFreq) + "},\"temperatures\":[";
+  String payload = "{\"config\":{\"tempFreq\":" + String(tempFreq) + ",\"connectionConfig\":" + String(connectionConfig) + ",\"connectionFreq\":" + String(connectionFreq) + "},\"temperatures\":[";
   for (int i = 0; i < counter; i++)
   {
     // payload += "{\"temp\":"+String(tab_temp[i].temp)+",\"timestamp\":"+String(tab_temp[i].time)+"}";
@@ -79,19 +73,50 @@ void sendData()
   }
   payload += "]}";
   int res = http.PUT(payload);
-  Serial.printf("HTTP POST result: %d\n", res);
+
+  if (res > 0)
+  {
+    Serial.print("HTTP Response code: ");
+    Serial.println(res);
+    String payload = http.getString();
+    Serial.println(payload);
+    StaticJsonDocument<512> doc;
+    DeserializationError error = deserializeJson(doc, payload);
+    if (error)
+    {
+      Serial.println(F("Failed to read file, using default configuration"));
+      return;
+    }
+    tempFreq = doc["tempFreq"];
+
+    connectionFreq = doc["connectionFreq"];
+
+    connectionConfig = doc["connectionConfig"];
+
+    Serial.println(String("tf = ") + tempFreq);
+    Serial.println(String("cg = ") + connectionConfig);
+    Serial.println(String("cf = ") + connectionFreq);
+  }
+  else
+  {
+    Serial.print("Error code: ");
+    Serial.println(res);
+  }
+  Serial.printf("HTTP PUT result: %d\n", res);
+  http.end();
 }
 
 void loop()
 {
-  float temp2 = readTemp2(false);
+  byte temp2 = readTemp2(false);
   // unsigned long time = getTime();
-  Serial.printf("time : %u Temp2 : %f, Wifi status %s\n Compteur : %u\n", time, temp2, WiFi.status() == WL_CONNECTED ? "connected" : "disconnected", counter);
+  Serial.printf("Temp2 : %u, Wifi status %s\n Compteur : %u\n", temp2, WiFi.status() == WL_CONNECTED ? "connected" : "disconnected", counter);
   tab_temp[counter] = temp2;
 
   // start esp light sleep of 5s
-  if (counter % 3 == 0)
+  if (counter % (connectionFreq / tempFreq) == 0)
   {
+    Serial.println("Sending data");
     initWifi();
     sendData();
     counter = 0;
