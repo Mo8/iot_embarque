@@ -5,6 +5,7 @@
 #include <ArduinoJson.h>
 #include <PubSubClient.h>
 #include <EEPROM.h>
+#include <ArduinoBLE.h>
 #define addr_temp_freq 0
 #define addr_connection_freq 1
 #define addr_connection_config 2
@@ -13,19 +14,63 @@
 const char *ssid = "esp32_wifi";
 const char *password = "wifi1234";
 String serverip = "192.168.43.150:3000";
-RTC_DATA_ATTR byte tab_temp[50];
+RTC_DATA_ATTR char tab_temp[50];
 RTC_DATA_ATTR byte counter = 0;
-byte tempFreq = 10;// frequence lecture
-byte connectionFreq = 30;// frequence envoie
-byte connectionConfig = 2;// frequence envoie
+RTC_DATA_ATTR unsigned long lastTimeConnection = 0;
+RTC_DATA_ATTR unsigned long lastTimeTemp = 0;
+byte tempFreq = 10;        // frequence lecture
+byte connectionFreq = 30;  // frequence envoie
+byte connectionConfig = 2; // frequence envoie
 
 WiFiClient espClient;
 PubSubClient client(espClient);
 
-void printConfig(){
+BLEService configService("7f48c732-1011-11ee-be56-0242ac120002");
+BLEByteCharacteristic tempFreqCharacteristique("8f094da4-1011-11ee-be56-0242ac120002", BLERead | BLEWrite | BLENotify);
+BLEByteCharacteristic connectionConfigCharacteristique("8f094da4-1011-11ee-be56-0242ac120004", BLERead | BLEWrite | BLENotify);
+BLEByteCharacteristic connectionFreqCharacteristique("8f094da4-1011-11ee-be56-0242ac120003", BLERead | BLEWrite | BLENotify);
+BLECharCharacteristic tempCharacteristique("6bdc4610-1f81-42f0-9a50-467554def186", BLERead | BLENotify);
+
+void printConfig()
+{
   Serial.println(String("tf = ") + tempFreq);
-  Serial.println(String("cg = ") + connectionConfig);
+  Serial.println(String("cc = ") + connectionConfig);
   Serial.println(String("cf = ") + connectionFreq);
+}
+
+void initWifi()
+{
+
+  WiFi.mode(WIFI_STA); // Optional
+  WiFi.begin(ssid, password);
+  Serial.println("\nConnecting");
+  while (WiFi.status() != WL_CONNECTED)
+  {
+    Serial.print(".");
+    delay(100);
+  }
+  Serial.print("\nConnected to the WiFi network");
+  Serial.println(WiFi.getAutoConnect());
+  Serial.print("Local ESP32 IP: ");
+  Serial.println(WiFi.localIP());
+}
+
+void setTempFreq(byte freq)
+{
+  tempFreq = freq != 10 && freq != 20 && freq != 60 ? 10 : freq;
+  EEPROM.put(addr_temp_freq, tempFreq);
+}
+
+void setConnectionConfig(byte config)
+{
+  connectionConfig = config != 1 && config != 2 && config != 3 ? 2 : config;
+  EEPROM.put(addr_connection_config, connectionConfig);
+}
+
+void setConnectionFreq(byte freq)
+{
+  connectionFreq = freq != 20 && freq != 30 && freq != 180 ? 20 : freq;
+  EEPROM.put(addr_connection_freq, connectionFreq);
 }
 
 void setup()
@@ -40,16 +85,40 @@ void setup()
   // read CPU speed
   rtc_cpu_freq_config_t freq_config;
   rtc_clk_cpu_freq_get_config(&freq_config);
-//Init EEPROM
+  // Init EEPROM
   EEPROM.begin(EEPROM_SIZE);
- byte t_tempFreq = EEPROM.read(addr_temp_freq) ;        // frequence lecture
- byte t_connectionFreq = EEPROM.read(addr_connection_freq); // frequence envoie
- byte t_connectionConfig = EEPROM.read(addr_connection_config);
- 
- tempFreq = t_tempFreq != 10 && t_tempFreq != 20 && t_tempFreq != 60 ? 10 : t_tempFreq;
- connectionFreq = t_connectionFreq != 20 && t_connectionFreq != 30 && t_connectionFreq != 180 ? 20 : t_connectionFreq;
- connectionConfig = t_connectionConfig != 1 && t_connectionConfig != 2 && t_connectionConfig != 3 ? 2 : t_connectionConfig;
- printConfig();
+  byte t_tempFreq = EEPROM.read(addr_temp_freq);             // frequence lecture
+  byte t_connectionFreq = EEPROM.read(addr_connection_freq); // frequence envoie
+  byte t_connectionConfig = EEPROM.read(addr_connection_config);
+  setTempFreq(t_tempFreq);
+  setConnectionConfig(t_connectionConfig);
+  setConnectionFreq(t_connectionFreq);
+
+  printConfig();
+
+  initWifi();
+  if (!BLE.begin())
+  {
+    Serial.println("failed to initialize BLE!");
+    while (1)
+      ;
+  }
+  BLE.setDeviceName("esp32_ble_c");
+  BLE.setLocalName("esp32_ble_local");
+  configService.addCharacteristic(tempFreqCharacteristique);
+  configService.addCharacteristic(connectionConfigCharacteristique);
+  configService.addCharacteristic(connectionFreqCharacteristique);
+  configService.addCharacteristic(tempCharacteristique);
+  BLE.addService(configService);
+
+  tempFreqCharacteristique.writeValue(tempFreq);
+  connectionConfigCharacteristique.writeValue(connectionConfig);
+  connectionFreqCharacteristique.writeValue(connectionFreq);
+  tempCharacteristique.writeValue(0);
+
+  BLE.advertise();
+
+  Serial.println("advertising ...");
 }
 
 unsigned long getTime()
@@ -65,22 +134,6 @@ unsigned long getTime()
   return now;
 }
 
-void initWifi()
-{
-  WiFi.mode(WIFI_STA); // Optional
-  WiFi.begin(ssid, password);
-  Serial.println("\nConnecting");
-  while (WiFi.status() != WL_CONNECTED)
-  {
-    Serial.print(".");
-    delay(100);
-  }
-  Serial.print("\nConnected to the WiFi network");
-  Serial.println(WiFi.getAutoConnect());
-  Serial.print("Local ESP32 IP: ");
-  Serial.println(WiFi.localIP());
-}
-
 void updateConfig(String payload)
 {
   StaticJsonDocument<512> doc;
@@ -90,19 +143,14 @@ void updateConfig(String payload)
     Serial.println(F("Failed to read file, using default configuration"));
     return;
   }
-  tempFreq = doc["tempFreq"];
-  EEPROM.put(addr_temp_freq, tempFreq);
+  setTempFreq(doc["tempFreq"]);
 
-  connectionFreq = doc["connectionFreq"];
-  EEPROM.put(addr_connection_freq, connectionFreq);
+  setConnectionFreq(doc["connectionFreq"]);
 
-  connectionConfig = doc["connectionConfig"];
-  EEPROM.put(addr_connection_config, connectionConfig);
+  setConnectionConfig(doc["connectionConfig"]);
 
   EEPROM.commit();
   printConfig();
-
-  
 }
 
 String generateJsonData()
@@ -111,7 +159,7 @@ String generateJsonData()
   for (int i = 0; i < counter; i++)
   {
     // payload += "{\"temp\":"+String(tab_temp[i].temp)+",\"timestamp\":"+String(tab_temp[i].time)+"}";
-    payload += String(tab_temp[i]);
+    payload += String(int(tab_temp[i]));
     if (i < counter - 1)
       payload += ",";
   }
@@ -135,7 +183,7 @@ void sendDataHttp()
     String payload = http.getString();
     Serial.println(payload);
 
-    updateConfig(payload);
+    //updateConfig(payload);
   }
   else
   {
@@ -199,28 +247,55 @@ void sendDataMqtt()
 
 void loop()
 {
+  BLE.poll();
+  if (BLE.connected())
+  {
+    if (tempFreqCharacteristique.written())
+    {
+      setTempFreq(tempFreqCharacteristique.value());
+      Serial.println("modif tf : " + String(tempFreq));
+      EEPROM.commit();
+    }
+    if (connectionConfigCharacteristique.written())
+    {
+      setConnectionConfig(connectionConfigCharacteristique.value());
+      Serial.println("modif cc : " + String(connectionConfig));
+      EEPROM.commit();
+    }
+    if (connectionFreqCharacteristique.written())
+    {
+      setConnectionFreq(connectionFreqCharacteristique.value());
+      Serial.println("modif cf : " + String(connectionFreq));
+      EEPROM.commit();
+    }
+  }
+  if (millis() - lastTimeTemp > tempFreq * 1000)
+  {
 
-  esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
-  byte temp2 = readTemp2(false);
-
-  // unsigned long time = getTime();
-  Serial.printf("Temp2 : %u, Wifi status %s\n Compteur : %u\n", temp2, WiFi.status() == WL_CONNECTED ? "connected" : "disconnected", counter);
-  tab_temp[counter] = temp2;
+    char temp2 = readTemp2(false);
+    Serial.printf("Temp2 : %u, Wifi status %s\n Compteur : %u\n", temp2, WiFi.status() == WL_CONNECTED ? "connected" : "disconnected", counter);
+    tab_temp[counter] = temp2;
+    tempCharacteristique.writeValue(temp2);
+    counter++;
+    lastTimeTemp = millis();
+  }
 
   // start esp light sleep of 5s
-  if (counter % (connectionFreq / tempFreq) == 0)
+  if (millis() - lastTimeConnection > connectionFreq * 1000)
   {
-    Serial.println("Sending data");
-    initWifi();
-    if (connectionConfig == 1 || connectionConfig == 3)
-      sendDataMqtt();
-    if (connectionConfig == 2 || connectionConfig == 3)
-      sendDataHttp();
 
+    // initWifi();
+    Serial.println("Sending data");
+    if (connectionConfig == 1 || connectionConfig == 3)
+      sendDataHttp();
+    if (connectionConfig == 2 || connectionConfig == 3)
+      sendDataMqtt();
+
+    lastTimeConnection = millis();
     counter = 0;
   }
   Serial.flush();
-  counter++;
-  esp_sleep_enable_timer_wakeup(tempFreq * 1000000);
-  esp_deep_sleep_start();
+
+  // esp_sleep_enable_timer_wakeup(tempFreq * 1000000);
+  // esp_deep_sleep_start();
 }
