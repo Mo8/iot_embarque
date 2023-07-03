@@ -11,6 +11,7 @@
 #define addr_connection_config 2
 #define EEPROM_SIZE 12
 
+const String name = "my_name";
 const char *ssid = "esp32_wifi";
 const char *password = "wifi1234";
 String serverip = "192.168.43.150:3000";
@@ -170,7 +171,7 @@ String generateJsonData()
 void sendDataHttp()
 {
   HTTPClient http;
-  String url = "http://" + serverip + "/host/api/Esp32/oui";
+  String url = "http://" + serverip + "/host/api/Esp32/"+name;
   http.begin(url.c_str());
   http.addHeader("Content-Type", "application/json");
   String payload = generateJsonData();
@@ -223,14 +224,14 @@ void sendDataMqtt()
   {
     Serial.print("Attempting MQTT connection...");
     // Attempt to connect
-    if (client.connect("my_idjkhjkgkjghjgh656456465"))
+    if (client.connect("my_id75468239710"))
     {
       Serial.println("connected");
       // Subscribe
-      Serial.println(client.subscribe("/ynov/esp32-CAUT/out"));
+      Serial.println(client.subscribe(String("/ynov/esp32-CAUT/out/"+name).c_str()));
       delay(400);
 
-      client.publish("/ynov/esp32-CAUT/in", generateJsonData().c_str());
+      client.publish(String("/ynov/esp32-CAUT/in/"+name).c_str(), generateJsonData().c_str());
       delay(1000);
       client.loop();
     }
