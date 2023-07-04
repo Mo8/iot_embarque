@@ -14,14 +14,17 @@
 const String name = "my_name";
 const char *ssid = "esp32_wifi";
 const char *password = "wifi1234";
-String serverip = "192.168.43.150:3000";
+String serverip = "http://192.168.43.150:3000";
 RTC_DATA_ATTR char tab_temp[50];
 RTC_DATA_ATTR byte counter = 0;
 RTC_DATA_ATTR unsigned long lastTimeConnection = 0;
 RTC_DATA_ATTR unsigned long lastTimeTemp = 0;
 byte tempFreq = 10;        // frequence lecture
 byte connectionFreq = 30;  // frequence envoie
-byte connectionConfig = 2; // frequence envoie
+byte connectionConfig = 1; // frequence envoie
+
+bool dataSent = false ;
+bool isConfigUpdate = false;
 
 WiFiClient espClient;
 PubSubClient client(espClient);
@@ -56,6 +59,7 @@ void initWifi()
   Serial.println(WiFi.localIP());
 }
 
+
 void setTempFreq(byte freq)
 {
   tempFreq = freq != 10 && freq != 20 && freq != 60 ? 10 : freq;
@@ -70,9 +74,95 @@ void setConnectionConfig(byte config)
 
 void setConnectionFreq(byte freq)
 {
-  connectionFreq = freq != 20 && freq != 30 && freq != 180 ? 20 : freq;
+  connectionFreq = freq != 20 && freq != 30 && freq != 60 && freq != 180 ? 20 : freq;
   EEPROM.put(addr_connection_freq, connectionFreq);
 }
+
+void updateConfig(String payload)
+{
+  StaticJsonDocument<512> doc;
+  DeserializationError error = deserializeJson(doc, payload);
+  if (error)
+  {
+    Serial.println(F("Failed to read file, using default configuration"));
+    return;
+  }
+  setTempFreq(doc["tempFreq"]);
+
+  setConnectionFreq(doc["connectionFreq"]);
+
+  setConnectionConfig(doc["connectionConfig"]);
+
+  EEPROM.commit();
+  printConfig();
+}
+
+String generateJsonConfig(){
+  return "{\"tempFreq\":" + String(tempFreq) + ",\"connectionConfig\":" + String(connectionConfig) + ",\"connectionFreq\":" + String(connectionFreq) + "}";
+}
+
+String generateJsonData()
+{
+  String payload = "{\"config\":"+generateJsonConfig()+",\"temperatures\":[";
+  for (int i = 0; i < counter; i++)
+  {
+    // payload += "{\"temp\":"+String(tab_temp[i].temp)+",\"timestamp\":"+String(tab_temp[i].time)+"}";
+    payload += String(int(tab_temp[i]));
+    if (i < counter - 1)
+      payload += ",";
+  }
+  payload += "]}";
+  return payload;
+}
+void putConfigHttp(){
+  HTTPClient http;
+  String url =  serverip + "/putConfigEsp32/"+name;
+  http.begin(url.c_str());
+  http.addHeader("Content-Type", "application/json");
+  String payload = generateJsonData();
+  int res = http.PUT(payload);
+  if (res > 0)
+  {
+    Serial.print("HTTP Response code: ");
+    Serial.println(res);
+  }
+  else
+  {
+    Serial.print("Error code: ");
+    Serial.println(res);
+  }
+  Serial.printf("HTTP PUT result: %d\n", res);
+  http.end();
+}
+
+
+
+void getConfigHttp(){
+  HTTPClient http;
+  String url =  serverip + "/getConfigEsp32/"+name;
+  http.begin(url.c_str());
+  http.addHeader("Content-Type", "application/json");
+  int res = http.GET();
+  if (res > 0)
+  {
+    Serial.print("HTTP Response code: ");
+    Serial.println(res);
+    if(res == 200){
+      String payload = http.getString();
+      Serial.println(payload);
+      updateConfig(payload);
+    }    
+  }
+  else
+  {
+    Serial.print("Error code: ");
+    Serial.println(res);
+  }
+  Serial.printf("HTTP GET result: %d\n", res);
+  http.end();
+}
+
+
 
 void setup()
 {
@@ -98,11 +188,15 @@ void setup()
   printConfig();
 
   initWifi();
+
+  if(WiFi.isConnected()){    
+    Serial.println("get distant config");
+    getConfigHttp();
+  }
   if (!BLE.begin())
   {
     Serial.println("failed to initialize BLE!");
-    while (1)
-      ;
+    while (1);
   }
   BLE.setDeviceName("esp32_ble_c");
   BLE.setLocalName("esp32_ble_local");
@@ -135,43 +229,10 @@ unsigned long getTime()
   return now;
 }
 
-void updateConfig(String payload)
-{
-  StaticJsonDocument<512> doc;
-  DeserializationError error = deserializeJson(doc, payload);
-  if (error)
-  {
-    Serial.println(F("Failed to read file, using default configuration"));
-    return;
-  }
-  setTempFreq(doc["tempFreq"]);
-
-  setConnectionFreq(doc["connectionFreq"]);
-
-  setConnectionConfig(doc["connectionConfig"]);
-
-  EEPROM.commit();
-  printConfig();
-}
-
-String generateJsonData()
-{
-  String payload = "{\"config\":{\"tempFreq\":" + String(tempFreq) + ",\"connectionConfig\":" + String(connectionConfig) + ",\"connectionFreq\":" + String(connectionFreq) + "},\"temperatures\":[";
-  for (int i = 0; i < counter; i++)
-  {
-    // payload += "{\"temp\":"+String(tab_temp[i].temp)+",\"timestamp\":"+String(tab_temp[i].time)+"}";
-    payload += String(int(tab_temp[i]));
-    if (i < counter - 1)
-      payload += ",";
-  }
-  payload += "]}";
-  return payload;
-}
 
 void sendDataHttp()
-{
-  HTTPClient http;
-  String url = "http://" + serverip + "/host/api/Esp32/"+name;
+{  HTTPClient http;
+  String url =  serverip + "/addTempEsp32/"+name;
   http.begin(url.c_str());
   http.addHeader("Content-Type", "application/json");
   String payload = generateJsonData();
@@ -179,10 +240,11 @@ void sendDataHttp()
 
   if (res > 0)
   {
-    Serial.print("HTTP Response code: ");
-    Serial.println(res);
-    String payload = http.getString();
-    Serial.println(payload);
+    if(res == 200) dataSent = true;
+    // Serial.print("HTTP Response code: ");
+    // Serial.println(res);
+    // String payload = http.getString();
+    // Serial.println(payload);
 
     //updateConfig(payload);
   }
@@ -220,30 +282,27 @@ void sendDataMqtt()
 
   client.setServer("broker.hivemq.com", 1883);
   client.setCallback(callback);
-  while (!client.connected())
+  Serial.print("Attempting MQTT connection...");
+  // Attempt to connect
+  if (client.connect("my_id75468239710"))
   {
-    Serial.print("Attempting MQTT connection...");
-    // Attempt to connect
-    if (client.connect("my_id75468239710"))
-    {
-      Serial.println("connected");
-      // Subscribe
-      Serial.println(client.subscribe(String("/ynov/esp32-CAUT/out/"+name).c_str()));
-      delay(400);
+    Serial.println("connected");
+    // Subscribe
+    // Serial.println(client.subscribe(String("/ynov/esp32-CAUT/out/"+name).c_str()));
+    // delay(400);
 
-      client.publish(String("/ynov/esp32-CAUT/in/"+name).c_str(), generateJsonData().c_str());
-      delay(1000);
-      client.loop();
-    }
-    else
-    {
-      Serial.print("failed, rc=");
-      Serial.print(client.state());
-      Serial.println(" try again in 5 seconds");
-      // Wait 5 seconds before retrying
-      delay(5000);
-    }
+    client.publish(String("/ynov/esp32-CAUT/in/"+name).c_str(), generateJsonData().c_str());
+    delay(1000);
+    dataSent = true;
+    //client.loop();
   }
+  else
+  {
+    Serial.print("failed, rc=");
+    Serial.print(client.state());
+    Serial.print(" Retry next connection");
+  }
+  
 }
 
 void loop()
@@ -255,18 +314,24 @@ void loop()
     {
       setTempFreq(tempFreqCharacteristique.value());
       Serial.println("modif tf : " + String(tempFreq));
+      
+      isConfigUpdate = true;
       EEPROM.commit();
     }
     if (connectionConfigCharacteristique.written())
     {
       setConnectionConfig(connectionConfigCharacteristique.value());
       Serial.println("modif cc : " + String(connectionConfig));
+      
+      isConfigUpdate = true;
       EEPROM.commit();
     }
     if (connectionFreqCharacteristique.written())
     {
       setConnectionFreq(connectionFreqCharacteristique.value());
       Serial.println("modif cf : " + String(connectionFreq));
+      
+      isConfigUpdate = true;
       EEPROM.commit();
     }
   }
@@ -281,10 +346,9 @@ void loop()
     lastTimeTemp = millis();
   }
 
-  // start esp light sleep of 5s
+  //try send data !
   if (millis() - lastTimeConnection > connectionFreq * 1000)
   {
-
     // initWifi();
     Serial.println("Sending data");
     if (connectionConfig == 1 || connectionConfig == 3)
@@ -292,8 +356,13 @@ void loop()
     if (connectionConfig == 2 || connectionConfig == 3)
       sendDataMqtt();
 
+    if(isConfigUpdate){
+      putConfigHttp();
+      isConfigUpdate = false;
+    }
     lastTimeConnection = millis();
-    counter = 0;
+    if(dataSent){counter = 0;dataSent = false;}
+    
   }
   Serial.flush();
 
