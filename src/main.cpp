@@ -162,6 +162,26 @@ void getConfigHttp(){
   http.end();
 }
 
+void getNTPTime()
+{
+  configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+  Serial.println("\nWaiting for time");
+  while (!time(nullptr))
+  {
+    Serial.print(".");
+    delay(1000);
+  }
+  Serial.println("");
+  time_t now;
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo))
+  {
+    Serial.println("Failed to obtain time");
+    return;
+  }
+  time(&now);
+  Serial.println(ctime(&now));
+}
 
 
 void setup()
@@ -214,6 +234,7 @@ void setup()
   BLE.advertise();
 
   Serial.println("advertising ...");
+  getNTPTime();
 }
 
 unsigned long getTime()
@@ -226,7 +247,9 @@ unsigned long getTime()
     return (0);
   }
   time(&now);
-  return now;
+  Serial.println(ctime(&now));
+  Serial.println(time(&now));
+  return now*1000;
 }
 
 
@@ -306,7 +329,7 @@ void sendDataMqtt()
 }
 
 void loop()
-{
+{  
   BLE.poll();
   if (BLE.connected())
   {
@@ -335,10 +358,12 @@ void loop()
       EEPROM.commit();
     }
   }
+  
   if (millis() - lastTimeTemp > tempFreq * 1000)
   {
 
     char temp2 = readTemp2(false);
+    //getTime();
     Serial.printf("Temp2 : %u, Wifi status %s\n Compteur : %u\n", temp2, WiFi.status() == WL_CONNECTED ? "connected" : "disconnected", counter);
     tab_temp[counter] = temp2;
     tempCharacteristique.writeValue(temp2);
